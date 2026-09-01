@@ -718,6 +718,15 @@ def download_audio(url, output_dir):
     else:
         print("⚠️ ffmpeg path not found or using system PATH")
 
+    # ========== COOKIES FIX FOR YOUTUBE BLOCKING ==========
+    cookie_path = "src/cookies.txt"
+    if os.path.exists(cookie_path):
+        print(f"🍪 Found cookies at {cookie_path}")
+        cmd.insert(4, "--cookies")
+        cmd.insert(5, cookie_path)
+    else:
+        print("ℹ️ No cookies.txt found — trying without")
+
     print(f"🚀 Running yt-dlp command: {' '.join(cmd)}")
 
     try:
