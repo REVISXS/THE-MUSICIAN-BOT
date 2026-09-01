@@ -17,7 +17,7 @@ import zipfile
 import sys
 from aiohttp import web
 
-# ========== WEB SERVER (for Render) ==========
+# ========== WEB SERVER (for Fly.io / Render) ==========
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
@@ -26,16 +26,16 @@ async def start_web_server():
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 10000)
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
     await site.start()
-    print("Dummy web server running on port 10000")
+    print("Dummy web server running on port 8080")
 
 # ========== SECURE TOKEN LOADING ==========
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not DISCORD_TOKEN:
     print("❌ DISCORD_TOKEN environment variable not set!")
-    print("Add it in Render Environment Variables.")
+    print("Add it in Fly.io / Render Environment Variables.")
     exit(1)
 
 # ========== WHITELIST SERVER ==========
@@ -57,39 +57,25 @@ ADMIN_ROLES = [
     "legend"
 ]
 
-# ========== FFMPEG DETECTION ==========
+# ========== FFMPEG DETECTION (ENHANCED FOR FLY.IO) ==========
 FFMPEG_EXE = "ffmpeg.exe"
 
 def get_ffmpeg_path():
-    # 1. Check current directory (for downloaded static binary on Render)
-    cwd = os.getcwd()
-    if os.path.exists(os.path.join(cwd, "ffmpeg")):
-        print(f"✅ Found ffmpeg in: {os.path.join(cwd, 'ffmpeg')}")
-        return os.path.join(cwd, "ffmpeg")
-    if os.path.exists(os.path.join(cwd, "ffmpeg.exe")):
-        print(f"✅ Found ffmpeg in: {os.path.join(cwd, 'ffmpeg.exe')}")
-        return os.path.join(cwd, "ffmpeg.exe")
+    """
+    Enhanced ffmpeg detection that works on:
+    - Windows (exe)
+    - Linux (Fly.io, Render)
+    - macOS
+    - Bundled exe
+    """
+    print("🔍 Searching for ffmpeg...")
 
-    # 2. If running as bundled exe, check sys._MEIPASS
-    if getattr(sys, 'frozen', False):
-        base_path = sys._MEIPASS
-        bundled_path = os.path.join(base_path, FFMPEG_EXE)
-        if os.path.exists(bundled_path):
-            print(f"✅ Found bundled ffmpeg in: {bundled_path}")
-            return bundled_path
-
-    # 3. Check script directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    local_path = os.path.join(script_dir, FFMPEG_EXE)
-    if os.path.exists(local_path):
-        print(f"✅ Found ffmpeg in: {local_path}")
-        return local_path
-
-    # 4. Check common Linux paths
+    # 1. Check common Linux paths first (Fly.io / Render)
     common_paths = [
-        "ffmpeg",
         "/usr/bin/ffmpeg",
         "/usr/local/bin/ffmpeg",
+        "/bin/ffmpeg",
+        "ffmpeg",  # PATH lookup
     ]
     for path in common_paths:
         try:
@@ -99,6 +85,30 @@ def get_ffmpeg_path():
                 return path
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             continue
+
+    # 2. Check current directory (for downloaded static binary)
+    cwd = os.getcwd()
+    if os.path.exists(os.path.join(cwd, "ffmpeg")):
+        print(f"✅ Found ffmpeg in current directory: {os.path.join(cwd, 'ffmpeg')}")
+        return os.path.join(cwd, "ffmpeg")
+    if os.path.exists(os.path.join(cwd, "ffmpeg.exe")):
+        print(f"✅ Found ffmpeg in current directory: {os.path.join(cwd, 'ffmpeg.exe')}")
+        return os.path.join(cwd, "ffmpeg.exe")
+
+    # 3. If running as bundled exe
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+        bundled_path = os.path.join(base_path, FFMPEG_EXE)
+        if os.path.exists(bundled_path):
+            print(f"✅ Found bundled ffmpeg: {bundled_path}")
+            return bundled_path
+
+    # 4. Check script directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    local_path = os.path.join(script_dir, FFMPEG_EXE)
+    if os.path.exists(local_path):
+        print(f"✅ Found ffmpeg in script dir: {local_path}")
+        return local_path
 
     print("❌ ffmpeg NOT FOUND!")
     return None
@@ -217,14 +227,6 @@ def midi_to_qwerty_pianoglow(midi_note, transpose=0):
         return white_keys[idx % len(white_keys)]
 
 def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
-    """
-    Generate a PLAYABLE QWERTY sheet from a MIDI file.
-    - Groups simultaneous notes into chords: [qwe]
-    - Filters out very short notes (grace notes / noise)
-    - Adds musical phrasing with proper spacing
-    - Cleans up repeated identical notes
-    - Returns clean, playable output
-    """
     try:
         midi_data = pretty_midi.PrettyMIDI(midi_path)
 
@@ -232,10 +234,8 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
         for instrument in midi_data.instruments:
             for note in instrument.notes:
                 duration = note.end - note.start
-                # Filter out notes shorter than 0.03s (noise/grace notes)
                 if duration < 0.03:
                     continue
-                # Filter out very low velocity notes
                 if note.velocity < 20:
                     continue
                 all_notes.append({
@@ -258,11 +258,9 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
 
         all_notes.sort(key=lambda x: x['start'])
 
-        # Limit total notes
         if len(all_notes) > max_notes:
             all_notes = all_notes[:max_notes]
 
-        # Group notes by time (0.02s precision for clean grouping)
         time_groups = {}
         for note in all_notes:
             time_key = round(note['start'] / 0.02) * 0.02
@@ -283,7 +281,6 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
 
         sorted_times = sorted(time_groups.keys())
 
-        # Track to avoid repetition
         last_keys = set()
         last_time = -999
 
@@ -296,10 +293,8 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
                 qwerty_notes.append(key)
                 total_notes += 1
 
-            # Remove duplicates within the same chord
             qwerty_notes = list(dict.fromkeys(qwerty_notes))
 
-            # If same as last chord and very close, skip to avoid repetition
             current_keys = set(qwerty_notes)
             if current_keys == last_keys and (time_key - last_time) < 0.1:
                 continue
@@ -309,7 +304,6 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
 
             qwerty_notes.sort()
 
-            # Create chord or single note
             if len(qwerty_notes) > 1:
                 chord_str = '[' + ''.join(qwerty_notes) + ']'
                 current_line.append(chord_str)
@@ -319,18 +313,15 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
                 current_line.append(qwerty_notes[0])
                 line_length += 1
 
-            # Add spacing based on musical timing (phrasing)
             if i < len(sorted_times) - 1:
                 gap = sorted_times[i+1] - time_key
                 if gap > 0.6:
-                    current_line.append('  ')  # Long pause = 2 spaces
+                    current_line.append('  ')
                     line_length += 2
                 elif gap > 0.25:
-                    current_line.append(' ')   # Medium pause = 1 space
+                    current_line.append(' ')
                     line_length += 1
-                # Small gaps = no space (tighter feel)
 
-            # Line wrap
             if line_length >= max_line_length:
                 lines.append(''.join(current_line))
                 current_line = []
@@ -709,8 +700,6 @@ def download_audio(url, output_dir):
         url
     ]
 
-    # If ffmpeg is found and it's not just "ffmpeg" (which would be in PATH),
-    # explicitly tell yt-dlp where to find it
     if ffmpeg_path and ffmpeg_path != "ffmpeg":
         print(f"📌 Using ffmpeg at: {ffmpeg_path}")
         cmd.insert(4, "--ffmpeg-location")
@@ -718,7 +707,7 @@ def download_audio(url, output_dir):
     else:
         print("⚠️ ffmpeg path not found or using system PATH")
 
-    # ========== COOKIES FIX FOR YOUTUBE BLOCKING ==========
+    # ========== COOKIES ==========
     cookie_path = "src/cookies.txt"
     if os.path.exists(cookie_path):
         print(f"🍪 Found cookies at {cookie_path}")
@@ -740,9 +729,8 @@ def download_audio(url, output_dir):
                 return os.path.join(output_dir, f)
     except subprocess.CalledProcessError as e:
         print(f"❌ yt-dlp error: {e.stderr}")
-        # If it's a 403 error, it's likely IP blocking
         if "403" in e.stderr:
-            print("⚠️ YouTube is blocking Render IP. Try using cookies.txt or a proxy.")
+            print("⚠️ YouTube is blocking IP. Try using cookies.txt or a proxy.")
         return None
     except subprocess.TimeoutExpired:
         print("❌ yt-dlp timed out after 5 minutes")
@@ -793,7 +781,7 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Sync error: {e}")
 
-    # Start dummy web server for Render
+    # Start dummy web server
     asyncio.create_task(start_web_server())
 
 # ========== SYNC COMMAND ==========
@@ -826,30 +814,54 @@ async def ttranscribe(
     file: discord.Attachment = None,
     transpose: int = 0
 ):
-    if not has_ffmpeg():
-        await interaction.response.send_message("🔍 Checking ffmpeg... Please wait...", ephemeral=True)
+    # ========== DEFER IMMEDIATELY ==========
+    await interaction.response.defer(thinking=True)
 
+    # ========== CHECK FFMPEG ==========
+    if not has_ffmpeg():
+        embed = discord.Embed(
+            title="❌ FFmpeg Missing",
+            description="ffmpeg could not be found. Please try again later.",
+            color=discord.Color.from_rgb(255, 75, 75)
+        )
+        await interaction.edit_original_response(content=None, embed=embed)
+        return
+
+    # ========== CHECK SERVER ==========
     if interaction.guild.id != ALLOWED_GUILD_ID:
-        embed = discord.Embed(title="⛔ Unauthorized", description=f"Your server: `{interaction.guild.id}`\nAllowed: `{ALLOWED_GUILD_ID}`", color=discord.Color.from_rgb(255, 75, 75))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed = discord.Embed(
+            title="⛔ Unauthorized Server",
+            description=f"Your server: `{interaction.guild.id}`\nAllowed: `{ALLOWED_GUILD_ID}`",
+            color=discord.Color.from_rgb(255, 75, 75)
+        )
+        await interaction.edit_original_response(content=None, embed=embed)
         return
 
     transpose = max(-12, min(12, transpose))
 
+    # ========== CHECK RATE LIMIT ==========
     allowed, limit = check_rate_limit(interaction.user.id, interaction.guild)
     if not allowed:
-        embed = discord.Embed(title="🚫 Daily Limit", description=f"You've hit **{limit}** transcriptions today.", color=discord.Color.from_rgb(255, 75, 75))
+        embed = discord.Embed(
+            title="🚫 Daily Limit",
+            description=f"You've hit **{limit}** transcriptions today.",
+            color=discord.Color.from_rgb(255, 75, 75)
+        )
         embed.set_author(name="THE MUSICIAN", icon_url="https://i.imgur.com/4MQI8Wq.png")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.edit_original_response(content=None, embed=embed)
         return
 
+    # ========== CHECK INPUT ==========
     if not url and not file:
-        embed = discord.Embed(title="⚠️ Missing Input", description="Provide a **URL** or attach an **audio/video file**.", color=discord.Color.from_rgb(255, 180, 50))
+        embed = discord.Embed(
+            title="⚠️ Missing Input",
+            description="Provide a **URL** or attach an **audio/video file**.",
+            color=discord.Color.from_rgb(255, 180, 50)
+        )
         embed.set_author(name="THE MUSICIAN", icon_url="https://i.imgur.com/4MQI8Wq.png")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.edit_original_response(content=None, embed=embed)
         return
 
-    await interaction.response.defer(thinking=True)
     start_time = time.time()
     video_title = None
     session_id = f"TM-{datetime.now().strftime('%Y%m%d')}-{str(interaction.user.id)[-4:]}"
@@ -899,7 +911,7 @@ async def ttranscribe(
                 if not audio_path:
                     embed = discord.Embed(
                         title="❌ Failed",
-                        description="Could not extract audio from YouTube.\n\n**Possible reasons:**\n• YouTube is blocking Render's IP\n• Try uploading a file directly\n\nIf this persists, contact the bot owner.",
+                        description="Could not extract audio from YouTube.\n\n**Possible reasons:**\n• YouTube is blocking Render/Fly.io IP\n• Try uploading a file directly\n\nIf this persists, contact the bot owner.",
                         color=discord.Color.from_rgb(255, 75, 75)
                     )
                     embed.set_author(name="THE MUSICIAN", icon_url="https://i.imgur.com/4MQI8Wq.png")
