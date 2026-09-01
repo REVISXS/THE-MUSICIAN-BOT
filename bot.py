@@ -61,24 +61,39 @@ ADMIN_ROLES = [
 FFMPEG_EXE = "ffmpeg.exe"
 
 def get_ffmpeg_path():
+    # 1. Check current directory (for downloaded static binary)
+    if os.path.exists(os.path.join(os.getcwd(), "ffmpeg")):
+        return os.path.join(os.getcwd(), "ffmpeg")
+    if os.path.exists(os.path.join(os.getcwd(), "ffmpeg.exe")):
+        return os.path.join(os.getcwd(), "ffmpeg.exe")
+
+    # 2. If running as bundled exe, check sys._MEIPASS
     if getattr(sys, 'frozen', False):
         base_path = sys._MEIPASS
         bundled_path = os.path.join(base_path, FFMPEG_EXE)
         if os.path.exists(bundled_path):
             return bundled_path
+
+    # 3. Check script directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
     local_path = os.path.join(script_dir, FFMPEG_EXE)
     if os.path.exists(local_path):
         return local_path
-    cwd_path = os.path.join(os.getcwd(), FFMPEG_EXE)
-    if os.path.exists(cwd_path):
-        return cwd_path
-    try:
-        result = subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            return "ffmpeg"
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+
+    # 4. Check common Linux paths
+    common_paths = [
+        "ffmpeg",
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+    ]
+    for path in common_paths:
+        try:
+            result = subprocess.run([path, "-version"], check=True, capture_output=True, timeout=2)
+            if result.returncode == 0:
+                return path
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
     return None
 
 def has_ffmpeg():
@@ -233,7 +248,7 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
     """
     try:
         midi_data = pretty_midi.PrettyMIDI(midi_path)
-        
+
         all_notes = []
         for instrument in midi_data.instruments:
             for note in instrument.notes:
@@ -251,7 +266,7 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
                     'duration': duration,
                     'velocity': note.velocity
                 })
-        
+
         if not all_notes:
             return {
                 'text': "Transpose: 0 (0 shifts, 0 CTRLs)\n\n[No notes detected]",
@@ -261,13 +276,13 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
                 'header': "Transpose: 0 (0 shifts, 0 CTRLs)",
                 'ctrls': 0
             }
-        
+
         all_notes.sort(key=lambda x: x['start'])
-        
+
         # Limit total notes
         if len(all_notes) > max_notes:
             all_notes = all_notes[:max_notes]
-        
+
         # Group notes by time (0.02s precision for clean grouping)
         time_groups = {}
         for note in all_notes:
@@ -279,42 +294,42 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
                 'duration': note['duration'],
                 'velocity': note['velocity']
             })
-        
+
         lines = []
         current_line = []
         line_length = 0
         max_line_length = 72
         ctrls = 0
         total_notes = 0
-        
+
         sorted_times = sorted(time_groups.keys())
-        
+
         # Track to avoid repetition
         last_keys = set()
         last_time = -999
-        
+
         for i, time_key in enumerate(sorted_times):
             notes_at_time = time_groups[time_key]
-            
+
             qwerty_notes = []
             for note in notes_at_time:
                 key = midi_to_qwerty_pianoglow(note['pitch'], transpose)
                 qwerty_notes.append(key)
                 total_notes += 1
-            
+
             # Remove duplicates within the same chord
             qwerty_notes = list(dict.fromkeys(qwerty_notes))
-            
+
             # If same as last chord and very close, skip to avoid repetition
             current_keys = set(qwerty_notes)
             if current_keys == last_keys and (time_key - last_time) < 0.1:
                 continue
-            
+
             last_keys = current_keys
             last_time = time_key
-            
+
             qwerty_notes.sort()
-            
+
             # Create chord or single note
             if len(qwerty_notes) > 1:
                 chord_str = '[' + ''.join(qwerty_notes) + ']'
@@ -324,7 +339,7 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
             else:
                 current_line.append(qwerty_notes[0])
                 line_length += 1
-            
+
             # Add spacing based on musical timing (phrasing)
             if i < len(sorted_times) - 1:
                 gap = sorted_times[i+1] - time_key
@@ -335,23 +350,23 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
                     current_line.append(' ')   # Medium pause = 1 space
                     line_length += 1
                 # Small gaps = no space (tighter feel)
-            
+
             # Line wrap
             if line_length >= max_line_length:
                 lines.append(''.join(current_line))
                 current_line = []
                 line_length = 0
-        
+
         if current_line:
             lines.append(''.join(current_line))
-        
+
         if not lines:
             lines = ["[no notes detected]"]
-        
+
         total_lines = len(lines)
         header = f"Transpose: {transpose:+d} ({total_notes} shifts, {ctrls} CTRLs)"
         sheet_text = header + "\n\n" + "\n".join(lines)
-        
+
         return {
             'text': sheet_text,
             'lines': lines,
@@ -360,7 +375,7 @@ def generate_qwerty_sheet_pianoglow(midi_path, transpose=0, max_notes=6000):
             'header': header,
             'ctrls': ctrls
         }
-        
+
     except Exception as e:
         print(f"QWERTY generation error: {e}")
         return {
@@ -1029,7 +1044,6 @@ async def ttranscribe(
 
             midi_bytes = open(tmp_midi_path, 'rb').read()
 
-            # ===== PLAYABLE QWERTY GENERATOR =====
             qwerty_result = generate_qwerty_sheet_pianoglow(tmp_midi_path, transpose=transpose)
             qwerty_text = qwerty_result['text']
             qwerty_line_count = qwerty_result['lines_count']
