@@ -716,8 +716,25 @@ def sanitize_filename(title):
 
 def download_audio(url, output_dir):
     output_template = os.path.join(output_dir, "audio.%(ext)s")
+    ffmpeg_path = get_ffmpeg_path()
+    
+    # Base command
+    cmd = [
+        "yt-dlp",
+        "-x",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",
+        "-o", output_template,
+        url
+    ]
+    
+    # If ffmpeg is found and it's not just "ffmpeg" (which would be in PATH),
+    # explicitly tell yt-dlp where to find it
+    if ffmpeg_path and ffmpeg_path != "ffmpeg":
+        cmd.insert(4, "--ffmpeg-location")
+        cmd.insert(5, ffmpeg_path)
+    
     try:
-        cmd = ["yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", output_template, url]
         result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
         print(f"yt-dlp output: {result.stdout}")
         for f in os.listdir(output_dir):
